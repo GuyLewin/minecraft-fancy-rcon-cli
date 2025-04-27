@@ -1,0 +1,7 @@
+# Rust build and dependency artifacts
+/target/
+Cargo.lock
+
+# IDE and Mac files
+.DS_Store
+.vscode/
