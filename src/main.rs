@@ -1,15 +1,30 @@
-use anyhow::{Context, Result};
-use minecraft_client_rs::rcon::RconClient;
+use anyhow::Result;
+use clap::Parser;
+use minecraft_client_rs::Client;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::validate::{Validator, ValidationContext, ValidationResult};
+use rustyline::history::DefaultHistory;
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::{Editor, Helper, Context as RustyContext};
-use std::borrow::Cow;
-use std::net::SocketAddr;
+use rpassword::prompt_password;
 
-// List of common Minecraft commands for autocompletion
-const MC_COMMANDS: &[&str] = &[
-    "/help", "/ban", "/ban-ip", "/banlist", "/deop", "/difficulty", "/effect", "/enchant", "/gamemode", "/gamerule", "/give", "/kick", "/kill", "/list", "/me", "/op", "/pardon", "/pardon-ip", "/save-all", "/save-off", "/save-on", "/say", "/scoreboard", "/seed", "/setblock", "/setidletimeout", "/setworldspawn", "/spawnpoint", "/stop", "/summon", "/teleport", "/tell", "/time", "/tp", "/weather", "/whitelist", "/xp"
-];
+mod mc_commands;
+use mc_commands::MC_COMMANDS;
+
+/// Minecraft RCON CLI
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+pub struct Cli {
+    /// Server address (host:port)
+    #[arg(short, long)]
+    pub address: String,
+
+    /// RCON password
+    #[arg(short, long)]
+    pub password: Option<String>,
+}
 
 struct MinecraftCompleter;
 
@@ -29,21 +44,38 @@ impl Completer for MinecraftCompleter {
     }
 }
 
+impl Hinter for MinecraftCompleter {
+    type Hint = String;
+    fn hint(&self, _line: &str, _pos: usize, _ctx: &RustyContext<'_>) -> Option<String> {
+        None
+    }
+}
+
+impl Highlighter for MinecraftCompleter {}
+impl Validator for MinecraftCompleter {
+    fn validate(&self, _ctx: &mut ValidationContext<'_>) -> Result<ValidationResult, ReadlineError> {
+        Ok(ValidationResult::Valid(None))
+    }
+}
+
 impl Helper for MinecraftCompleter {}
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let mut rl = Editor::new().unwrap();
+fn main() -> Result<()> {
+    let mut rl = Editor::<MinecraftCompleter, DefaultHistory>::new().unwrap();
     rl.set_helper(Some(MinecraftCompleter));
 
     println!("Minecraft RCON CLI");
-    let addr = prompt(&mut rl, "Server address (host:port): ")?;
-    let password = prompt(&mut rl, "RCON password: ")?;
+    let cli = Cli::parse();
+    let addr = cli.address;
+    let password = match cli.password {
+        Some(pw) => pw,
+        None => {
+            prompt_password("Enter RCON password: ").expect("Failed to read password")
+        }
+    };
 
-    let sock_addr: SocketAddr = addr.parse().context("Invalid server address")?;
-    let mut client = RconClient::connect(sock_addr, &password)
-        .await
-        .context("Failed to connect to RCON server")?;
+    let mut client = Client::new(addr.clone()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    client.authenticate(password.clone()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
     println!("Connected. Type Minecraft commands or 'exit' to quit.");
 
     loop {
@@ -57,9 +89,10 @@ async fn main() -> Result<()> {
                 if cmd.is_empty() {
                     continue;
                 }
-                rl.add_history_entry(cmd);
-                match client.cmd(cmd).await {
-                    Ok(response) => println!("{}", response),
+                // Ignore failures in history addition
+                let _ = rl.add_history_entry(cmd);
+                match client.send_command(cmd.to_string()) {
+                    Ok(response) => println!("{}", response.body),
                     Err(e) => eprintln!("Error: {}", e),
                 }
             }
@@ -72,11 +105,5 @@ async fn main() -> Result<()> {
             }
         }
     }
-    println!("Goodbye!");
     Ok(())
-}
-
-fn prompt(rl: &mut Editor<MinecraftCompleter>, msg: &str) -> Result<String> {
-    let line = rl.readline(msg)?;
-    Ok(line.trim().to_string())
 }
