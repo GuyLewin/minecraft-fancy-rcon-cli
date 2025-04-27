@@ -60,6 +60,20 @@ impl Validator for MinecraftCompleter {
 
 impl Helper for MinecraftCompleter {}
 
+fn format_help_response(body: &str) -> String {
+    let mut fixed = String::with_capacity(body.len());
+    let mut chars = body.chars().peekable();
+    let mut prev = None;
+    while let Some(c) = chars.next() {
+        if c == '/' && prev != Some('\n') && prev.is_some() {
+            fixed.push('\n');
+        }
+        fixed.push(c);
+        prev = Some(c);
+    }
+    fixed.trim().to_string()
+}
+
 fn main() -> Result<()> {
     let mut rl = Editor::<MinecraftCompleter, DefaultHistory>::new().unwrap();
     rl.set_helper(Some(MinecraftCompleter));
@@ -92,7 +106,13 @@ fn main() -> Result<()> {
                 // Ignore failures in history addition
                 let _ = rl.add_history_entry(cmd);
                 match client.send_command(cmd.to_string()) {
-                    Ok(response) => println!("{}", response.body),
+                    Ok(response) => {
+                        if cmd.eq_ignore_ascii_case("help") || cmd.eq_ignore_ascii_case("/help") {
+                            println!("{}", format_help_response(&response.body));
+                        } else {
+                            println!("{}", response.body);
+                        }
+                    },
                     Err(e) => eprintln!("Error: {}", e),
                 }
             }
