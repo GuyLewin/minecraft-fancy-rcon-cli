@@ -10,9 +10,6 @@ use rustyline::error::ReadlineError;
 use rustyline::{Editor, Helper, Context as RustyContext};
 use rpassword::prompt_password;
 
-mod mc_commands;
-use mc_commands::MC_COMMANDS;
-
 /// Minecraft RCON CLI
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -26,18 +23,24 @@ pub struct Cli {
     pub password: Option<String>,
 }
 
-struct MinecraftCompleter;
+#[derive(Debug, Clone)]
+struct CommandInfo {
+    name: String,
+}
+
+struct MinecraftCompleter {
+    commands: Vec<CommandInfo>,
+}
 
 impl Completer for MinecraftCompleter {
     type Candidate = Pair;
 
     fn complete(&self, line: &str, _pos: usize, _ctx: &RustyContext<'_>) -> Result<(usize, Vec<Pair>), ReadlineError> {
-        let candidates = MC_COMMANDS
-            .iter()
-            .filter(|cmd| cmd.starts_with(line))
-            .map(|&cmd| Pair {
-                display: cmd.to_string(),
-                replacement: cmd.to_string(),
+        let candidates = self.commands.iter()
+            .filter(|cmd| cmd.name.starts_with(line))
+            .map(|cmd| Pair {
+                display: cmd.name.clone(),
+                replacement: cmd.name.clone(),
             })
             .collect::<Vec<_>>();
         Ok((0, candidates))
@@ -46,15 +49,32 @@ impl Completer for MinecraftCompleter {
 
 impl Hinter for MinecraftCompleter {
     type Hint = String;
-    fn hint(&self, _line: &str, _pos: usize, _ctx: &RustyContext<'_>) -> Option<String> {
-        None
+    fn hint(&self, line: &str, _pos: usize, _ctx: &RustyContext<'_>) -> Option<String> {
+        self.commands.iter()
+            .find(|cmd| cmd.name.starts_with(line) && cmd.name != line)
+            .map(|cmd| cmd.name[line.len()..].to_string())
     }
 }
 
-impl Highlighter for MinecraftCompleter {}
+impl Highlighter for MinecraftCompleter {
+    fn highlight_hint<'h>(&self, hint: &'h str) -> std::borrow::Cow<'h, str> {
+        use std::borrow::Cow;
+        if !hint.is_empty() {
+            Cow::Owned(format!("\x1b[90m{}\x1b[0m", hint)) // gray hint
+        } else {
+            Cow::Borrowed("")
+        }
+    }
+}
+
 impl Validator for MinecraftCompleter {
-    fn validate(&self, _ctx: &mut ValidationContext<'_>) -> Result<ValidationResult, ReadlineError> {
-        Ok(ValidationResult::Valid(None))
+    fn validate(&self, ctx: &mut ValidationContext<'_>) -> Result<ValidationResult, ReadlineError> {
+        let input = ctx.input();
+        if self.commands.iter().any(|cmd| cmd.name == input.trim()) {
+            Ok(ValidationResult::Valid(None))
+        } else {
+            Ok(ValidationResult::Invalid(Some("Unknown command".to_string())))
+        }
     }
 }
 
@@ -74,9 +94,22 @@ fn format_help_response(body: &str) -> String {
     fixed.trim().to_string()
 }
 
+fn parse_help_output(help: String) -> Vec<CommandInfo> {
+    help.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.starts_with('/') {
+                let cmd = line.split_whitespace().next().unwrap_or("");
+                Some(CommandInfo { name: cmd.to_string() })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 fn main() -> Result<()> {
     let mut rl = Editor::<MinecraftCompleter, DefaultHistory>::new().unwrap();
-    rl.set_helper(Some(MinecraftCompleter));
 
     println!("Minecraft RCON CLI");
     let cli = Cli::parse();
@@ -90,6 +123,11 @@ fn main() -> Result<()> {
 
     let mut client = Client::new(addr.clone()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
     client.authenticate(password.clone()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+    // Fetch and parse /help for dynamic completion
+    let help_response = client.send_command("/help".to_string()).map_err(|e| anyhow::anyhow!(e.to_string()))?.body;
+    let commands = parse_help_output(format_help_response(&help_response));
+    rl.set_helper(Some(MinecraftCompleter { commands }));
     println!("Connected. Type Minecraft commands or 'exit' to quit.");
 
     loop {
