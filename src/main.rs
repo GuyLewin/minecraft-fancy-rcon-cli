@@ -34,7 +34,7 @@ struct CommandInfo {
 enum Argument {
     Required(String),         // <arg>
     Optional(String),         // [<arg>]
-    Choice(Vec<String>),      // [a|b|c] or (a|b|c)
+    RequiredChoice(Vec<String>),      //(a|b|c)
     OptionalChoice(Vec<String>), // [(a|b|c)] or [a|b|c]
 }
 
@@ -43,12 +43,14 @@ struct MinecraftCompleter {
     commands: Vec<CommandInfo>,
 }
 
+const ERROR_PREFIX: &str = "Unknown or incomplete command, see below for error";
+
 impl Completer for MinecraftCompleter {
     type Candidate = Pair;
 
     fn complete(&self, line: &str, pos: usize, _ctx: &RustyContext<'_>) -> Result<(usize, Vec<Pair>), ReadlineError> {
         let input = &line[..pos];
-        let words: Vec<&str> = input.trim_start().split_whitespace().collect();
+        let words: Vec<&str> = input.split(' ').collect();
         match words.len() {
             // No suggestions on empty input
             0 => Ok((0, Vec::new())),
@@ -58,7 +60,7 @@ impl Completer for MinecraftCompleter {
                 .filter(|cmd| cmd.name.starts_with(line))
                 .map(|cmd| Pair {
                     display: cmd.name.clone(),
-                    replacement: cmd.name.clone(),
+                    replacement: cmd.name.clone() + " ",
                 })
                 .collect();
                 Ok((0, candidates))
@@ -76,7 +78,7 @@ impl Completer for MinecraftCompleter {
                         }
                         if let Some(arg) = cmd.args.get(input_argument_count - 1) {
                             match arg {
-                                Argument::Choice(choices) | Argument::OptionalChoice(choices) => {
+                                Argument::RequiredChoice(choices) | Argument::OptionalChoice(choices) => {
                                     for choice in choices {
                                         if choice.starts_with(words.last().unwrap()) {
                                             pairs.push(Pair {
@@ -177,7 +179,7 @@ fn parse_help_output(help: String) -> Vec<CommandInfo> {
     let re_cmd = Regex::new(r"^(?P<cmd>/\w+)(?P<args>.*)").unwrap();
     let re_required = Regex::new(r"<([^>]+)>").unwrap();
     let re_optional = Regex::new(r"\[<([^>]+)>\]").unwrap();
-    let re_choice = Regex::new(r"\(([^)]+)\)").unwrap();
+    let re_required_choice = Regex::new(r"\(([^)]+)\)").unwrap();
     let re_optional_choice = Regex::new(r"\[([^\]]+\|[^\]]+)\]").unwrap();
 
     help.lines()
@@ -196,9 +198,9 @@ fn parse_help_output(help: String) -> Vec<CommandInfo> {
                     args.push(Argument::Optional(cap[1].to_string()));
                 }
                 // Parse choices (parentheses or brackets)
-                for cap in re_choice.captures_iter(args_str) {
+                for cap in re_required_choice.captures_iter(args_str) {
                     let opts = cap[1].split('|').map(|s| s.trim().to_string()).collect();
-                    args.push(Argument::Choice(opts));
+                    args.push(Argument::RequiredChoice(opts));
                 }
                 for cap in re_optional_choice.captures_iter(args_str) {
                     let opts = cap[1].split('|').map(|s| s.trim().to_string()).collect();
@@ -211,6 +213,15 @@ fn parse_help_output(help: String) -> Vec<CommandInfo> {
         })
         .collect()
 } 
+
+fn format_generic_response(body: &str) -> String {
+    if body.starts_with(ERROR_PREFIX) {
+        let suffix = &body[ERROR_PREFIX.len()..];
+        format!("{}\n{}", ERROR_PREFIX, suffix.trim_start())
+    } else {
+        body.to_string()
+    }
+}
 
 fn main() -> Result<()> {
     let config = Config::builder()
@@ -255,7 +266,7 @@ fn main() -> Result<()> {
                         if cmd.starts_with("help") || cmd.starts_with("/help") {
                             println!("{}", format_help_response(&response.body));
                         } else {
-                            println!("{}", response.body);
+                            println!("{}", format_generic_response(&response.body));
                         }
                     },
                     Err(e) => eprintln!("Error: {}", e),
