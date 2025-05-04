@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 description = "A Rust-based Minecraft RCON CLI with rustyline autocompletion."
+repository = "https://github.com/GuyLewin/minecraft-fancy-rcon-cli"
+readme = "README.md"
+keywords = ["minecraft", "rcon", "cli"]
+license = "MIT"
+categories = ["command-line-utilities"]
 
 [dependencies]
 minecraft-client-rs = "0.1"
