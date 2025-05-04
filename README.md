@@ -1,3 +1,6 @@
+[![CI](https://github.com/GuyLewin/minecraft-fancy-rcon-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/GuyLewin/minecraft-fancy-rcon-cli/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/minecraft-fancy-rcon-cli.svg)](https://crates.io/crates/minecraft-fancy-rcon-cli)
+
 # Fancy Minecraft RCON CLI
 
 A powerful, user-friendly, and interactive command-line interface for sending RCON commands to a Minecraft server, written in Rust.
