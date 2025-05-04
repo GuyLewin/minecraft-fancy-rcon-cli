@@ -86,20 +86,17 @@ impl Completer for MinecraftCompleter {
                         if args.len() < input_argument_count {
                             return Ok((0, Vec::new()));
                         }
-                        if let Some(arg) = args.get(input_argument_count - 1) {
-                            match arg {
-                                Argument::RequiredChoice(choices)
-                                | Argument::OptionalChoice(choices) => {
-                                    for choice in choices {
-                                        if choice.starts_with(words.last().unwrap()) {
-                                            pairs.push(Pair {
-                                                display: choice.clone(),
-                                                replacement: choice.clone() + " ",
-                                            });
-                                        }
-                                    }
+                        if let Some(
+                            Argument::RequiredChoice(choices) | Argument::OptionalChoice(choices),
+                        ) = args.get(input_argument_count - 1)
+                        {
+                            for choice in choices {
+                                if choice.starts_with(words.last().unwrap()) {
+                                    pairs.push(Pair {
+                                        display: choice.clone(),
+                                        replacement: choice.clone() + " ",
+                                    });
                                 }
-                                _ => {}
                             }
                         }
                         Ok((line.len() - words.last().unwrap().len(), pairs))
