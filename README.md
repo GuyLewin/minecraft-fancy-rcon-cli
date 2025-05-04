@@ -1,13 +1,20 @@
-# Minecraft RCON CLI
+# Fancy Minecraft RCON CLI
 
-A simple, user-friendly command-line interface for sending RCON commands to a Minecraft server, written in Rust.
+A powerful, user-friendly, and interactive command-line interface for sending RCON commands to a Minecraft server, written in Rust.
 
 ## Features
-- Connect to a Minecraft server using RCON protocol
-- Securely prompt for password if not provided via CLI
-- Command autocompletion for common Minecraft commands
-- Interactive shell with history support
-- Clean error handling
+- Connect to a Minecraft server using the RCON protocol
+- Command autocompletion for all supported Minecraft commands (auto-derived via /help)
+- Argument autocompletion and real-time hinting (shows next argument or possible values as you type)
+- Interactive shell with persistent command history
+- Syntax highlighting for commands
+- Clean error handling and helpful error messages
+- Supports aliases for commands (if defined)
+
+## TODOs
+- Argument autocompletion
+- Syntax highlighting for arguments
+- More complex argument parsing (e.g., `<respectTeams>|under`)
 
 ## Usage
 
@@ -28,11 +35,6 @@ Example:
 cargo run -- --address 127.0.0.1:25575
 ```
 
-## Features
-- Autocompletes common Minecraft commands (e.g., `/op`, `/ban`, `/whitelist`, etc.)
-- Command history and editing
-- Graceful exit with `exit` or `quit`
-
 ## Dependencies
 - [minecraft-client-rs](https://crates.io/crates/minecraft-client-rs)
 - [rustyline](https://crates.io/crates/rustyline)
@@ -48,6 +50,11 @@ MIT
 ### Notes
 - Make sure your Minecraft server has RCON enabled and configured in `server.properties`.
 - This tool is for server operators and requires the RCON port and password.
+
+---
+
+## Disclaimer
+This project is not affiliated with, endorsed by, or associated with Mojang, Microsoft, or Minecraft. All trademarks and copyrights are the property of their respective owners.
 
 ---
 
