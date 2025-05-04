@@ -10,6 +10,9 @@ use rustyline::error::ReadlineError;
 use rustyline::{Config, CompletionType, Editor, Helper, Context as RustyContext};
 use rpassword::prompt_password;
 use std::borrow::Cow;
+use std::collections::HashMap;
+
+mod help_parser;
 
 /// Minecraft RCON CLI
 #[derive(Parser, Debug)]
@@ -25,12 +28,6 @@ pub struct Cli {
 }
 
 #[derive(Debug, Clone)]
-struct CommandInfo {
-    name: String,
-    args: Vec<Argument>,
-}
-
-#[derive(Debug, Clone)]
 enum Argument {
     Required(String),         // <arg>
     Optional(String),         // [<arg>]
@@ -40,7 +37,7 @@ enum Argument {
 
 
 struct MinecraftCompleter {
-    commands: Vec<CommandInfo>,
+    commands: HashMap<String, Vec<Argument>>,
 }
 
 const ERROR_PREFIX: &str = "Unknown or incomplete command, see below for error";
@@ -56,27 +53,27 @@ impl Completer for MinecraftCompleter {
             0 => Ok((0, Vec::new())),
             // Complete command name
             1 => {
-                let candidates = self.commands.iter()
-                .filter(|cmd| cmd.name.starts_with(line))
-                .map(|cmd| Pair {
-                    display: cmd.name.clone(),
-                    replacement: cmd.name.clone() + " ",
-                })
-                .collect();
+                let candidates = self.commands.keys()
+                    .filter(|cmd_name| cmd_name.starts_with(line))
+                    .map(|cmd_name| Pair {
+                        display: cmd_name.clone(),
+                        replacement: cmd_name.clone() + " ",
+                    })
+                    .collect();
                 Ok((0, candidates))
             },
             // Try to match command
             _ => {
-                match self.commands.iter().find(|cmd| words[0] == cmd.name) {
-                    Some(cmd) => {
+                match self.commands.get(words[0]) {
+                    Some(args) => {
                         // Complete argument
                         let mut pairs = Vec::new();
                         let input_argument_count = words.len() - 1; // -1 for command name
                         // If there are too many input arguments, return no suggestions
-                        if cmd.args.len() < input_argument_count {
+                        if args.len() < input_argument_count {
                             return Ok((0, Vec::new()));
                         }
-                        if let Some(arg) = cmd.args.get(input_argument_count - 1) {
+                        if let Some(arg) = args.get(input_argument_count - 1) {
                             match arg {
                                 Argument::RequiredChoice(choices) | Argument::OptionalChoice(choices) => {
                                     for choice in choices {
@@ -106,8 +103,8 @@ impl Hinter for MinecraftCompleter {
         if line.is_empty() || line == "/" || !line.starts_with('/') || line.contains(' ') {
             return None;
         }
-        if let Some(cmd) = self.commands.iter().find(|cmd| cmd.name.starts_with(line) && cmd.name != line) {
-            return Some(cmd.name[line.len()..].to_string());
+        if let Some(cmd_name) = self.commands.keys().find(|cmd_name| cmd_name.starts_with(line)) {
+            return Some(cmd_name[line.len()..].to_string());
         }
         None
     }
@@ -135,7 +132,7 @@ fn highlight_command(completer: &MinecraftCompleter, s: &str, is_suggestion: boo
         return s.to_string();
     }
     let command_found = completer.commands.iter()
-                .any(|cmd| cmd.name == words[0]);
+                .any(|(cmd_name, _)| cmd_name == words[0]);
 
     if command_found {
         if is_suggestion {
@@ -159,60 +156,6 @@ impl Validator for MinecraftCompleter {
 }
 
 impl Helper for MinecraftCompleter {}
-
-fn format_help_response(body: &str) -> String {
-    let mut fixed = String::with_capacity(body.len());
-    let mut chars = body.chars().peekable();
-    let mut prev = None;
-    while let Some(c) = chars.next() {
-        if c == '/' && prev != Some('\n') && prev.is_some() {
-            fixed.push('\n');
-        }
-        fixed.push(c);
-        prev = Some(c);
-    }
-    fixed.trim().to_string()
-}
-
-fn parse_help_output(help: String) -> Vec<CommandInfo> {
-    use regex::Regex;
-    let re_cmd = Regex::new(r"^(?P<cmd>/\w+)(?P<args>.*)").unwrap();
-    let re_required = Regex::new(r"<([^>]+)>").unwrap();
-    let re_optional = Regex::new(r"\[<([^>]+)>\]").unwrap();
-    let re_required_choice = Regex::new(r"\(([^)]+)\)").unwrap();
-    let re_optional_choice = Regex::new(r"\[([^\]]+\|[^\]]+)\]").unwrap();
-
-    help.lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if let Some(cap) = re_cmd.captures(line) {
-                let name = cap["cmd"].to_string();
-                let mut args = Vec::new();
-                let args_str = cap.name("args").map(|m| m.as_str()).unwrap_or("");
-                // Parse required args
-                for cap in re_required.captures_iter(args_str) {
-                    args.push(Argument::Required(cap[1].to_string()));
-                }
-                // Parse optional args
-                for cap in re_optional.captures_iter(args_str) {
-                    args.push(Argument::Optional(cap[1].to_string()));
-                }
-                // Parse choices (parentheses or brackets)
-                for cap in re_required_choice.captures_iter(args_str) {
-                    let opts = cap[1].split('|').map(|s| s.trim().to_string()).collect();
-                    args.push(Argument::RequiredChoice(opts));
-                }
-                for cap in re_optional_choice.captures_iter(args_str) {
-                    let opts = cap[1].split('|').map(|s| s.trim().to_string()).collect();
-                    args.push(Argument::OptionalChoice(opts));
-                }
-                Some(CommandInfo { name, args })
-            } else {
-                None
-            }
-        })
-        .collect()
-} 
 
 fn format_generic_response(body: &str) -> String {
     if body.starts_with(ERROR_PREFIX) {
@@ -244,7 +187,7 @@ fn main() -> Result<()> {
 
     // Fetch and parse /help for dynamic completion
     let help_response = client.send_command("/help".to_string()).map_err(|e| anyhow::anyhow!(e.to_string()))?.body;
-    let commands = parse_help_output(format_help_response(&help_response));
+    let commands = help_parser::parse_commands(help_parser::format_help_response(&help_response));
     rl.set_helper(Some(MinecraftCompleter { commands }));
     println!("Connected. Type Minecraft commands or 'exit' to quit.");
 
@@ -264,7 +207,7 @@ fn main() -> Result<()> {
                 match client.send_command(cmd.to_string()) {
                     Ok(response) => {
                         if cmd.starts_with("help") || cmd.starts_with("/help") {
-                            println!("{}", format_help_response(&response.body));
+                            println!("{}", help_parser::format_help_response(&response.body));
                         } else {
                             println!("{}", format_generic_response(&response.body));
                         }
