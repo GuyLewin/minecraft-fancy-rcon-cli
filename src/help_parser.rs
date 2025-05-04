@@ -7,7 +7,7 @@ pub fn format_help_response(body: &str) -> String {
     let mut fixed = String::with_capacity(body.len());
     let mut chars = body.chars().peekable();
     let mut prev = None;
-    while let Some(c) = chars.next() {
+    for c in chars {
         if c == '/' && prev != Some('\n') && prev.is_some() {
             fixed.push('\n');
         }

@@ -147,7 +147,7 @@ fn highlight_command(completer: &MinecraftCompleter, s: &str, is_suggestion: boo
     let mut colored = String::new();
 
     let words: Vec<&str> = s.split_whitespace().collect();
-    if words.len() == 0 {
+    if words.is_empty() {
         return s.to_string();
     }
     let command_found = completer
@@ -161,10 +161,10 @@ fn highlight_command(completer: &MinecraftCompleter, s: &str, is_suggestion: boo
         } else {
             colored.push_str("\x1b[32m"); // green
         }
-        colored.push_str(&words[0]);
+        colored.push_str(words[0]);
         colored.push_str("\x1b[0m"); // reset
     } else {
-        colored.push_str(&words[0]);
+        colored.push_str(words[0]);
     }
     colored.push_str(&s[words[0].len()..]);
     colored
