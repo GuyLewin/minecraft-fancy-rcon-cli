@@ -39,7 +39,10 @@ struct MinecraftCompleter {
     commands: HashMap<String, Vec<Argument>>,
 }
 
-const ERROR_PREFIX: &str = "Unknown or incomplete command, see below for error";
+const ERROR_PREFIXES: &[&str] = &[
+    "Unknown or incomplete command, see below for error",
+    "Incorrect argument for command",
+];
 
 impl Completer for MinecraftCompleter {
     type Candidate = Pair;
@@ -175,9 +178,12 @@ impl Validator for MinecraftCompleter {
 impl Helper for MinecraftCompleter {}
 
 fn format_generic_response(body: &str) -> String {
-    if body.starts_with(ERROR_PREFIX) {
-        let suffix = &body[ERROR_PREFIX.len()..];
-        format!("{}\n{}", ERROR_PREFIX, suffix.trim_start())
+    if let Some(prefix) = ERROR_PREFIXES
+        .iter()
+        .find(|prefix| body.starts_with(*prefix))
+    {
+        let suffix = &body[prefix.len()..];
+        format!("{}\n{}", prefix, suffix.trim_start())
     } else {
         body.to_string()
     }
