@@ -1,14 +1,14 @@
 use anyhow::Result;
 use clap::Parser;
 use minecraft_client_rs::Client;
-use rustyline::highlight::Highlighter;
-use rustyline::hint::Hinter;
-use rustyline::validate::{Validator, ValidationContext, ValidationResult};
-use rustyline::history::DefaultHistory;
+use rpassword::prompt_password;
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
-use rustyline::{Config, CompletionType, Editor, Helper, Context as RustyContext};
-use rpassword::prompt_password;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::{ValidationContext, ValidationResult, Validator};
+use rustyline::{CompletionType, Config, Context as RustyContext, Editor, Helper};
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -29,12 +29,11 @@ pub struct Cli {
 
 #[derive(Debug, Clone)]
 enum Argument {
-    Required(String),         // <arg>
-    Optional(String),         // [<arg>]
-    RequiredChoice(Vec<String>),      //(a|b|c)
+    Required(String),            // <arg>
+    Optional(String),            // [<arg>]
+    RequiredChoice(Vec<String>), //(a|b|c)
     OptionalChoice(Vec<String>), // [(a|b|c)] or [a|b|c]
 }
-
 
 struct MinecraftCompleter {
     commands: HashMap<String, Vec<Argument>>,
@@ -45,7 +44,12 @@ const ERROR_PREFIX: &str = "Unknown or incomplete command, see below for error";
 impl Completer for MinecraftCompleter {
     type Candidate = Pair;
 
-    fn complete(&self, line: &str, pos: usize, _ctx: &RustyContext<'_>) -> Result<(usize, Vec<Pair>), ReadlineError> {
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &RustyContext<'_>,
+    ) -> Result<(usize, Vec<Pair>), ReadlineError> {
         let input = &line[..pos];
         let words: Vec<&str> = input.split(' ').collect();
         match words.len() {
@@ -53,7 +57,9 @@ impl Completer for MinecraftCompleter {
             0 => Ok((0, Vec::new())),
             // Complete command name
             1 => {
-                let candidates = self.commands.keys()
+                let candidates = self
+                    .commands
+                    .keys()
                     .filter(|cmd_name| cmd_name.starts_with(line))
                     .map(|cmd_name| Pair {
                         display: cmd_name.clone(),
@@ -61,7 +67,7 @@ impl Completer for MinecraftCompleter {
                     })
                     .collect();
                 Ok((0, candidates))
-            },
+            }
             // Try to match command
             _ => {
                 match self.commands.get(words[0]) {
@@ -69,13 +75,14 @@ impl Completer for MinecraftCompleter {
                         // Complete argument
                         let mut pairs = Vec::new();
                         let input_argument_count = words.len() - 1; // -1 for command name
-                        // If there are too many input arguments, return no suggestions
+                                                                    // If there are too many input arguments, return no suggestions
                         if args.len() < input_argument_count {
                             return Ok((0, Vec::new()));
                         }
                         if let Some(arg) = args.get(input_argument_count - 1) {
                             match arg {
-                                Argument::RequiredChoice(choices) | Argument::OptionalChoice(choices) => {
+                                Argument::RequiredChoice(choices)
+                                | Argument::OptionalChoice(choices) => {
                                     for choice in choices {
                                         if choice.starts_with(words.last().unwrap()) {
                                             pairs.push(Pair {
@@ -89,7 +96,7 @@ impl Completer for MinecraftCompleter {
                             }
                         }
                         Ok((line.len() - words.last().unwrap().len(), pairs))
-                    },
+                    }
                     None => Ok((0, Vec::new())),
                 }
             }
@@ -103,12 +110,16 @@ impl Hinter for MinecraftCompleter {
         if line.is_empty() || line == "/" || !line.starts_with('/') || line.contains(' ') {
             return None;
         }
-        if let Some(cmd_name) = self.commands.keys().find(|cmd_name| cmd_name.starts_with(line)) {
+        if let Some(cmd_name) = self
+            .commands
+            .keys()
+            .find(|cmd_name| cmd_name.starts_with(line))
+        {
             return Some(cmd_name[line.len()..].to_string());
         }
         None
     }
-} 
+}
 
 impl Highlighter for MinecraftCompleter {
     fn highlight_candidate<'c>(
@@ -116,7 +127,7 @@ impl Highlighter for MinecraftCompleter {
         candidate: &'c str,
         _completion: rustyline::CompletionType,
     ) -> Cow<'c, str> {
-        Cow::Owned(highlight_command( self, candidate, true))
+        Cow::Owned(highlight_command(self, candidate, true))
     }
 
     fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
@@ -131,8 +142,10 @@ fn highlight_command(completer: &MinecraftCompleter, s: &str, is_suggestion: boo
     if words.len() == 0 {
         return s.to_string();
     }
-    let command_found = completer.commands.iter()
-                .any(|(cmd_name, _)| cmd_name == words[0]);
+    let command_found = completer
+        .commands
+        .iter()
+        .any(|(cmd_name, _)| cmd_name == words[0]);
 
     if command_found {
         if is_suggestion {
@@ -145,12 +158,15 @@ fn highlight_command(completer: &MinecraftCompleter, s: &str, is_suggestion: boo
     } else {
         colored.push_str(&words[0]);
     }
-    colored.push_str(&s[words[0].len()..]); 
+    colored.push_str(&s[words[0].len()..]);
     colored
 }
 
 impl Validator for MinecraftCompleter {
-    fn validate(&self, _ctx: &mut ValidationContext<'_>) -> Result<ValidationResult, ReadlineError> {
+    fn validate(
+        &self,
+        _ctx: &mut ValidationContext<'_>,
+    ) -> Result<ValidationResult, ReadlineError> {
         Ok(ValidationResult::Valid(None))
     }
 }
@@ -177,16 +193,19 @@ fn main() -> Result<()> {
     let addr = cli.address;
     let password = match cli.password {
         Some(pw) => pw,
-        None => {
-            prompt_password("Enter RCON password: ").expect("Failed to read password")
-        }
+        None => prompt_password("Enter RCON password: ").expect("Failed to read password"),
     };
 
     let mut client = Client::new(addr.clone()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    client.authenticate(password.clone()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    client
+        .authenticate(password.clone())
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
     // Fetch and parse /help for dynamic completion
-    let help_response = client.send_command("/help".to_string()).map_err(|e| anyhow::anyhow!(e.to_string()))?.body;
+    let help_response = client
+        .send_command("/help".to_string())
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?
+        .body;
     let commands = help_parser::parse_commands(help_parser::format_help_response(&help_response));
     rl.set_helper(Some(MinecraftCompleter { commands }));
     println!("Connected. Type Minecraft commands or 'exit' to quit.");
@@ -211,7 +230,7 @@ fn main() -> Result<()> {
                         } else {
                             println!("{}", format_generic_response(&response.body));
                         }
-                    },
+                    }
                     Err(e) => eprintln!("Error: {}", e),
                 }
             }

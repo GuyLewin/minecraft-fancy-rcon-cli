@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use regex::Regex;
+use std::collections::HashMap;
 
 use crate::Argument;
 
