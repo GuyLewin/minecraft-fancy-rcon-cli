@@ -239,14 +239,14 @@ fn main() -> Result<()> {
                             println!("{}", format_generic_response(&response.body));
                         }
                     }
-                    Err(e) => eprintln!("Error: {}", e),
+                    Err(e) => eprintln!("Error: {e}"),
                 }
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => {
                 break;
             }
             Err(err) => {
-                println!("Error: {:?}", err);
+                println!("Error: {err:?}");
                 break;
             }
         }
