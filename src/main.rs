@@ -75,7 +75,8 @@ impl Completer for MinecraftCompleter {
                         // Complete argument
                         let mut pairs = Vec::new();
                         let input_argument_count = words.len() - 1; // -1 for command name
-                                                                    // If there are too many input arguments, return no suggestions
+
+                        // If there are too many input arguments, return no suggestions
                         if args.len() < input_argument_count {
                             return Ok((0, Vec::new()));
                         }

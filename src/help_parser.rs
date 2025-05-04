@@ -52,7 +52,8 @@ pub fn parse_commands(help: String) -> HashMap<String, Vec<Argument>> {
                 args.push(Argument::OptionalChoice(opts));
             }
             commands.insert(name, args);
-        } else if let Some(cap) = re_alias.captures(line) {
+        }
+        if let Some(cap) = re_alias.captures(line) {
             let alias = cap["alias"].to_string();
             let target = format!("/{}", &cap["target"]);
             alias_map.insert(alias, target);
