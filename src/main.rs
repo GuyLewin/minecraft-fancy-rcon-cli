@@ -30,8 +30,10 @@ pub struct Cli {
 // TODO: Add support for complex structures like (<respectTeams>|under)
 #[derive(Debug, Clone)]
 enum Argument {
-    Required(String),            // <arg>
-    Optional(String),            // [<arg>]
+    #[allow(dead_code)]
+    Required(String), // <arg>
+    #[allow(dead_code)]
+    Optional(String), // [<arg>]
     RequiredChoice(Vec<String>), //(a|b|c)
     OptionalChoice(Vec<String>), // [(a|b|c)] or [a|b|c]
 }
