@@ -27,6 +27,7 @@ pub struct Cli {
     pub password: Option<String>,
 }
 
+// TODO: Add support for complex structures like (<respectTeams>|under)
 #[derive(Debug, Clone)]
 enum Argument {
     Required(String),            // <arg>
@@ -121,6 +122,7 @@ impl Hinter for MinecraftCompleter {
         {
             return Some(cmd_name[line.len()..].to_string());
         }
+        // TODO: Add support for argument hinting
         None
     }
 }
