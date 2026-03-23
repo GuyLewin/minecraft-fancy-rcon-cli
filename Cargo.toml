@@ -11,7 +11,7 @@ license = "MIT"
 categories = ["command-line-utilities"]
 
 [dependencies]
-minecraft-client-rs = "0.1"
+minecraft-client-rs = { git = "https://github.com/LaDaniWapa/minecraft-client-rs" }
 rustyline = "15.0"
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
