@@ -1,68 +1,141 @@
-use regex::Regex;
-use std::collections::HashMap;
+use crate::tree::{Kind, Node};
+use std::collections::BTreeMap;
 
-use crate::Argument;
+/// One line of `/help`: `/name usage...` or `/alias -> target`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct HelpEntry {
+    pub name: String,
+    pub usage: String,
+    pub alias_of: Option<String>,
+}
 
+/// RCON strips the line breaks between help entries; put them back.
 pub fn format_help_response(body: &str) -> String {
     let mut fixed = String::with_capacity(body.len());
-    let chars = body.chars().peekable();
-    let mut prev = None;
-    for c in chars {
-        if c == '/' && prev != Some('\n') && prev.is_some() {
+    for (i, c) in body.char_indices() {
+        if c == '/' && i > 0 && !fixed.ends_with('\n') {
             fixed.push('\n');
         }
         fixed.push(c);
-        prev = Some(c);
     }
     fixed.trim().to_string()
 }
 
-pub fn parse_commands(help: String) -> HashMap<String, Vec<Argument>> {
-    let re_cmd = Regex::new(r"^(?P<cmd>/\w+)(?P<args>.*)").unwrap();
-    let re_required = Regex::new(r"<([^>]+)>").unwrap();
-    let re_optional = Regex::new(r"\[<([^>]+)>\]").unwrap();
-    let re_required_choice = Regex::new(r"\(([^)]+)\)").unwrap();
-    let re_optional_choice = Regex::new(r"\[([^\]]+\|[^\]]+)\]").unwrap();
-    let re_alias = Regex::new(r"^(?P<alias>/\w+)\s*->\s*(?P<target>\w+)").unwrap();
+pub fn parse_help(body: &str) -> Vec<HelpEntry> {
+    format_help_response(body)
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim().strip_prefix('/')?;
+            let (name, usage) = line.split_once(' ').unwrap_or((line, ""));
+            if name.is_empty() {
+                return None;
+            }
+            let usage = usage.trim();
+            Some(HelpEntry {
+                name: name.to_string(),
+                usage: usage.to_string(),
+                alias_of: usage.strip_prefix("-> ").map(|t| t.trim().to_string()),
+            })
+        })
+        .collect()
+}
 
-    let mut commands: HashMap<String, Vec<Argument>> = HashMap::new();
-    let mut alias_map: HashMap<String, String> = HashMap::new(); // alias -> target
+/// Builds a command node from a usage line such as
+/// `<targets> (add|remove|list) [<reason>]`.
+///
+/// Usage lines are abbreviated, so this only knows the first few arguments
+/// and none of their types.
+pub fn usage_to_node(usage: &str) -> Node {
+    let mut node = Node::new(Kind::Literal);
+    let mut next: BTreeMap<String, Node> = BTreeMap::new();
+    let mut next_optional = true;
 
-    for line in help.lines() {
-        let line = line.trim();
-        if let Some(cap) = re_cmd.captures(line) {
-            let name = cap["cmd"].to_string();
-            let mut args = Vec::new();
-            let args_str = cap.name("args").map(|m| m.as_str()).unwrap_or("");
-            // Parse required args
-            for cap in re_required.captures_iter(args_str) {
-                args.push(Argument::Required(cap[1].to_string()));
-            }
-            // Parse optional args
-            for cap in re_optional.captures_iter(args_str) {
-                args.push(Argument::Optional(cap[1].to_string()));
-            }
-            // Parse choices (parentheses or brackets)
-            for cap in re_required_choice.captures_iter(args_str) {
-                let opts = cap[1].split('|').map(|s| s.trim().to_string()).collect();
-                args.push(Argument::RequiredChoice(opts));
-            }
-            for cap in re_optional_choice.captures_iter(args_str) {
-                let opts = cap[1].split('|').map(|s| s.trim().to_string()).collect();
-                args.push(Argument::OptionalChoice(opts));
-            }
-            commands.insert(name, args);
+    for element in split_top_level(usage, ' ').into_iter().rev() {
+        let (inner, optional) = match element.strip_prefix('[').and_then(|e| e.strip_suffix(']')) {
+            Some(inner) => (inner, true),
+            None => (element, false),
+        };
+        let inner = inner
+            .strip_prefix('(')
+            .and_then(|e| e.strip_suffix(')'))
+            .unwrap_or(inner);
+
+        let mut level = BTreeMap::new();
+        for alternative in split_top_level(inner, '|') {
+            let (name, kind) = match alternative
+                .strip_prefix('<')
+                .and_then(|a| a.strip_suffix('>'))
+            {
+                Some(name) => (name, Kind::Argument),
+                None => (alternative, Kind::Literal),
+            };
+            let mut child = Node::new(kind);
+            child.children = next.clone();
+            child.executable = next_optional;
+            level.insert(name.to_string(), child);
         }
-        if let Some(cap) = re_alias.captures(line) {
-            let alias = cap["alias"].to_string();
-            let target = format!("/{}", &cap["target"]);
-            alias_map.insert(alias, target);
-        }
+        next = level;
+        next_optional = optional;
     }
 
-    for (alias, target) in alias_map {
-        // Replace empty alias commands with target commands
-        commands.insert(alias, commands[&target].clone());
+    node.children = next;
+    node.executable = next_optional;
+    node
+}
+
+/// Splits on `separator` outside of any brackets, skipping empty pieces.
+fn split_top_level(s: &str, separator: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' | '[' | '<' => depth += 1,
+            ')' | ']' | '>' => depth = depth.saturating_sub(1),
+            c if c == separator && depth == 0 => {
+                parts.push(&s[start..i]);
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
     }
-    commands
+    parts.push(&s[start..]);
+    parts.retain(|p| !p.is_empty());
+    parts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_names_with_dashes_and_aliases() {
+        let entries = parse_help("/ban-ip <target> [<reason>]/tp -> teleport/reload/seed");
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["ban-ip", "tp", "reload", "seed"]);
+        assert_eq!(entries[0].usage, "<target> [<reason>]");
+        assert_eq!(entries[1].alias_of.as_deref(), Some("teleport"));
+        assert_eq!(entries[2].alias_of, None);
+    }
+
+    #[test]
+    fn builds_node_from_usage() {
+        let node = usage_to_node("<targets> (add|remove|list) [<reason>]");
+        assert!(!node.executable);
+        let targets = &node.children["targets"];
+        assert_eq!(targets.kind, Kind::Argument);
+        assert_eq!(
+            targets.children.keys().collect::<Vec<_>>(),
+            ["add", "list", "remove"]
+        );
+        let add = &targets.children["add"];
+        assert!(add.executable);
+        assert_eq!(add.children["reason"].kind, Kind::Argument);
+        assert!(add.children["reason"].executable);
+
+        assert!(usage_to_node("").executable);
+        let choice = usage_to_node("(<respectTeams>|under)");
+        assert_eq!(choice.children["respectTeams"].kind, Kind::Argument);
+        assert_eq!(choice.children["under"].kind, Kind::Literal);
+    }
 }

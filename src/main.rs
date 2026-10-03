@@ -1,53 +1,133 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
-use minecraft_client_rs::Client;
 use rpassword::prompt_password;
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
-use rustyline::highlight::Highlighter;
-use rustyline::hint::Hinter;
+use rustyline::highlight::{CmdKind, Highlighter};
+use rustyline::hint::{Hint, Hinter};
 use rustyline::history::DefaultHistory;
-use rustyline::validate::{ValidationContext, ValidationResult, Validator};
+use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context as RustyContext, Editor, Helper};
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::IsTerminal;
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
+mod complete;
+mod data;
+mod format;
 mod help_parser;
+mod rcon;
+mod tree;
+
+use complete::{Engine, Live, LiveList};
+
+const DIM: &str = "\x1b[2m";
+const RESET: &str = "\x1b[0m";
+
+/// How long player names and the like are reused before asking again.
+const LIVE_LIST_TTL: Duration = Duration::from_secs(10);
+const HISTORY_FILE: &str = ".minecraft_rcon_history";
 
 /// Minecraft RCON CLI
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
     /// Server address (host:port)
-    #[arg(short, long)]
+    #[arg(short, long, default_value = "127.0.0.1:25575")]
     pub address: String,
 
-    /// RCON password
-    #[arg(short, long)]
+    /// RCON password; prompted for when missing
+    #[arg(short, long, env = "RCON_PASSWORD", hide_env_values = true)]
     pub password: Option<String>,
+
+    /// The server's Minecraft version, e.g. 1.21.4, for servers too old to
+    /// report it themselves
+    #[arg(long, value_name = "VERSION")]
+    pub minecraft_version: Option<String>,
+
+    /// Take command data from this file, made by scripts/generate_data.py,
+    /// instead of downloading it
+    #[arg(long, value_name = "PATH", conflicts_with = "minecraft_version")]
+    pub data_file: Option<PathBuf>,
+
+    /// Run this command and exit, instead of starting the interactive shell
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub command: Vec<String>,
 }
 
-// TODO: Add support for complex structures like (<respectTeams>|under)
-#[derive(Debug, Clone)]
-enum Argument {
-    #[allow(dead_code)]
-    Required(String), // <arg>
-    #[allow(dead_code)]
-    Optional(String), // [<arg>]
-    RequiredChoice(Vec<String>), //(a|b|c)
-    OptionalChoice(Vec<String>), // [(a|b|c)] or [a|b|c]
+/// The server connection, shared between the shell and its completer.
+struct Session {
+    client: RefCell<rcon::Client>,
+    lists: RefCell<HashMap<LiveList, (Instant, Vec<String>)>>,
 }
 
-struct MinecraftCompleter {
-    commands: HashMap<String, Vec<Argument>>,
+impl Live for Session {
+    fn list(&self, what: LiveList, fetch: bool) -> Vec<String> {
+        if let Some((fetched, names)) = self.lists.borrow().get(&what) {
+            if !fetch || fetched.elapsed() < LIVE_LIST_TTL {
+                return names.clone();
+            }
+        }
+        if !fetch {
+            return Vec::new();
+        }
+        let command = match what {
+            LiveList::Players => "list",
+            LiveList::Whitelist => "whitelist list",
+            LiveList::Objectives => "scoreboard objectives list",
+            LiveList::Teams => "team list",
+        };
+        // Failures are cached as well, to not stall on every keypress.
+        let names = match self.client.borrow_mut().command(command) {
+            Ok(body) => parse_name_list(&body),
+            Err(_) => Vec::new(),
+        };
+        self.lists
+            .borrow_mut()
+            .insert(what, (Instant::now(), names.clone()));
+        names
+    }
 }
 
-const ERROR_PREFIXES: &[&str] = &[
-    "Unknown or incomplete command, see below for error",
-    "Incorrect argument for command",
-];
+/// Extracts the names from responses like `There are 2 of a max of 20 players
+/// online: a, b` or `There are 2 team(s): [a], [b]`.
+fn parse_name_list(body: &str) -> Vec<String> {
+    let Some((_, names)) = body.split_once(':') else {
+        return Vec::new();
+    };
+    names
+        .split(',')
+        .map(|name| name.trim().trim_matches(['[', ']']).to_string())
+        .filter(|name| !name.is_empty() && !name.contains(' '))
+        .collect()
+}
 
-impl Completer for MinecraftCompleter {
+struct MinecraftHelper {
+    engine: Engine,
+    session: Rc<Session>,
+}
+
+struct CommandHint {
+    text: String,
+    completes: bool,
+}
+
+impl Hint for CommandHint {
+    fn display(&self) -> &str {
+        &self.text
+    }
+
+    fn completion(&self) -> Option<&str> {
+        self.completes.then_some(&self.text)
+    }
+}
+
+impl Completer for MinecraftHelper {
     type Candidate = Pair;
 
     fn complete(
@@ -56,171 +136,143 @@ impl Completer for MinecraftCompleter {
         pos: usize,
         _ctx: &RustyContext<'_>,
     ) -> Result<(usize, Vec<Pair>), ReadlineError> {
-        let input = &line[..pos];
-        let words: Vec<&str> = input.split(' ').collect();
-        match words.len() {
-            // No suggestions on empty input
-            0 => Ok((0, Vec::new())),
-            // Complete command name
-            1 => {
-                let candidates = self
-                    .commands
-                    .keys()
-                    .filter(|cmd_name| cmd_name.starts_with(line))
-                    .map(|cmd_name| Pair {
-                        display: cmd_name.clone(),
-                        replacement: cmd_name.clone() + " ",
-                    })
-                    .collect();
-                Ok((0, candidates))
-            }
-            // Try to match command
-            _ => {
-                match self.commands.get(words[0]) {
-                    Some(args) => {
-                        // Complete argument
-                        let mut pairs = Vec::new();
-                        let input_argument_count = words.len() - 1; // -1 for command name
-
-                        // If there are too many input arguments, return no suggestions
-                        if args.len() < input_argument_count {
-                            return Ok((0, Vec::new()));
-                        }
-                        if let Some(
-                            Argument::RequiredChoice(choices) | Argument::OptionalChoice(choices),
-                        ) = args.get(input_argument_count - 1)
-                        {
-                            for choice in choices {
-                                if choice.starts_with(words.last().unwrap()) {
-                                    pairs.push(Pair {
-                                        display: choice.clone(),
-                                        replacement: choice.clone() + " ",
-                                    });
-                                }
-                            }
-                        }
-                        Ok((line.len() - words.last().unwrap().len(), pairs))
-                    }
-                    None => Ok((0, Vec::new())),
-                }
-            }
-        }
+        let candidates = self
+            .engine
+            .candidates(&line[..pos], self.session.as_ref(), true);
+        let start = candidates.first().map_or(pos, |c| c.start);
+        // Don't double the space when completing in the middle of a line.
+        let space_follows = line[pos..].starts_with(' ');
+        let pairs = candidates
+            .into_iter()
+            .map(|c| Pair {
+                replacement: if c.space && !space_follows {
+                    format!("{} ", c.text)
+                } else {
+                    c.text.clone()
+                },
+                display: c.text,
+            })
+            .collect();
+        Ok((start, pairs))
     }
 }
 
-impl Hinter for MinecraftCompleter {
-    type Hint = String;
-    fn hint(&self, line: &str, _pos: usize, _ctx: &RustyContext<'_>) -> Option<String> {
-        if line.is_empty() || line == "/" || !line.starts_with('/') || line.contains(' ') {
+impl Hinter for MinecraftHelper {
+    type Hint = CommandHint;
+
+    fn hint(&self, line: &str, pos: usize, _ctx: &RustyContext<'_>) -> Option<CommandHint> {
+        if pos < line.len() {
             return None;
         }
-        if let Some(cmd_name) = self
-            .commands
-            .keys()
-            .find(|cmd_name| cmd_name.starts_with(line))
-        {
-            return Some(cmd_name[line.len()..].to_string());
-        }
-        // TODO: Add support for argument hinting
-        None
+        let hint = self.engine.hint(line, self.session.as_ref())?;
+        Some(CommandHint {
+            text: hint.text,
+            completes: hint.completes,
+        })
     }
 }
 
-impl Highlighter for MinecraftCompleter {
-    fn highlight_candidate<'c>(
-        &self,
-        candidate: &'c str,
-        _completion: rustyline::CompletionType,
-    ) -> Cow<'c, str> {
-        Cow::Owned(highlight_command(self, candidate, true))
-    }
-
+impl Highlighter for MinecraftHelper {
     fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
-        Cow::Owned(highlight_command(self, line, false))
+        Cow::Owned(self.engine.highlight(line))
+    }
+
+    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+        Cow::Owned(format!("{DIM}{hint}{RESET}"))
+    }
+
+    fn highlight_char(&self, _line: &str, _pos: usize, kind: CmdKind) -> bool {
+        kind != CmdKind::MoveCursor
     }
 }
 
-fn highlight_command(completer: &MinecraftCompleter, s: &str, is_suggestion: bool) -> String {
-    let mut colored = String::new();
+impl Validator for MinecraftHelper {}
 
-    let words: Vec<&str> = s.split_whitespace().collect();
-    if words.is_empty() {
-        return s.to_string();
-    }
-    let command_found = completer
-        .commands
-        .iter()
-        .any(|(cmd_name, _)| cmd_name == words[0]);
+impl Helper for MinecraftHelper {}
 
-    if command_found {
-        if is_suggestion {
-            colored.push_str("\x1b[33m"); // yellow
-        } else {
-            colored.push_str("\x1b[32m"); // green
+fn history_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(PathBuf::from(home).join(HISTORY_FILE))
+}
+
+/// Runs a command and prints its response. Returns whether it succeeded.
+fn run_command(session: &Session, command: &str, color: bool, interactive: bool) -> bool {
+    let result = session.client.borrow_mut().command(command);
+    // The command may have changed any of the cached lists.
+    session.lists.borrow_mut().clear();
+    match result {
+        Ok(body) => {
+            let response = format::format_response(command, &body, color);
+            if !response.text.is_empty() {
+                println!("{}", response.text);
+            } else if interactive {
+                println!("{DIM}(no output){RESET}");
+            }
+            !response.is_error
         }
-        colored.push_str(words[0]);
-        colored.push_str("\x1b[0m"); // reset
-    } else {
-        colored.push_str(words[0]);
-    }
-    colored.push_str(&s[words[0].len()..]);
-    colored
-}
-
-impl Validator for MinecraftCompleter {
-    fn validate(
-        &self,
-        _ctx: &mut ValidationContext<'_>,
-    ) -> Result<ValidationResult, ReadlineError> {
-        Ok(ValidationResult::Valid(None))
+        Err(e) => {
+            eprintln!("Error: {e:#}");
+            false
+        }
     }
 }
 
-impl Helper for MinecraftCompleter {}
-
-fn format_generic_response(body: &str) -> String {
-    if let Some(prefix) = ERROR_PREFIXES
-        .iter()
-        .find(|prefix| body.starts_with(*prefix))
-    {
-        let suffix = &body[prefix.len()..];
-        format!("{}\n{}", prefix, suffix.trim_start())
-    } else {
-        body.to_string()
+fn run_shell(
+    session: Rc<Session>,
+    color: bool,
+    version: Option<String>,
+    data_file: Option<PathBuf>,
+) -> Result<()> {
+    let mut tree = match data_file {
+        Some(path) => {
+            let json = std::fs::read_to_string(&path)
+                .with_context(|| format!("could not read {}", path.display()))?;
+            tree::Tree::from_json(&json)
+                .with_context(|| format!("{} is not a command data file", path.display()))?
+        }
+        None => {
+            let version = version.or_else(|| {
+                let body = session.client.borrow_mut().command("version").ok()?;
+                data::parse_version(&body)
+            });
+            data::tree_for(version.as_deref())
+        }
+    };
+    let data_version = tree.version.clone();
+    // The server knows best which commands exist; the data fills in their
+    // arguments.
+    match session.client.borrow_mut().command("help") {
+        Ok(body) => tree.apply_help(&help_parser::parse_help(&body)),
+        Err(e) => eprintln!("Warning: could not fetch the command list: {e:#}"),
     }
-}
+    let command_count = tree.root.children.len();
 
-fn main() -> Result<()> {
     let config = Config::builder()
         .completion_type(CompletionType::List)
+        .history_ignore_dups(true)?
+        .max_history_size(10_000)?
         .build();
-    let mut rl = Editor::<MinecraftCompleter, DefaultHistory>::with_config(config).unwrap();
+    let mut rl = Editor::<MinecraftHelper, DefaultHistory>::with_config(config)?;
+    rl.set_helper(Some(MinecraftHelper {
+        engine: Engine { tree },
+        session: Rc::clone(&session),
+    }));
+    let history = history_path();
+    if let Some(path) = &history {
+        // Missing on first run.
+        let _ = rl.load_history(path);
+    }
 
-    println!("Minecraft RCON CLI");
-    let cli = Cli::parse();
-    let addr = cli.address;
-    let password = match cli.password {
-        Some(pw) => pw,
-        None => prompt_password("Enter RCON password: ").expect("Failed to read password"),
-    };
-
-    let mut client = Client::new(addr.clone()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    client
-        .authenticate(password.clone())
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-
-    // Fetch and parse /help for dynamic completion
-    let help_response = client
-        .send_command("/help".to_string())
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?
-        .body;
-    let commands = help_parser::parse_commands(help_parser::format_help_response(&help_response));
-    rl.set_helper(Some(MinecraftCompleter { commands }));
-    println!("Connected. Type Minecraft commands or 'exit' to quit.");
+    // Keep piped output down to the responses.
+    if std::io::stdin().is_terminal() {
+        println!(
+            "Connected: {command_count} commands, completing arguments as of Minecraft {data_version}."
+        );
+        println!("Tab completes, 'exit' or Ctrl-D quits.");
+    }
 
     loop {
-        let readline = rl.readline("> ");
-        match readline {
+        match rl.readline("> ") {
             Ok(line) => {
                 let cmd = line.trim();
                 if cmd.eq_ignore_ascii_case("exit") || cmd.eq_ignore_ascii_case("quit") {
@@ -231,25 +283,65 @@ fn main() -> Result<()> {
                 }
                 // Ignore failures in history addition
                 let _ = rl.add_history_entry(cmd);
-                match client.send_command(cmd.to_string()) {
-                    Ok(response) => {
-                        if cmd.starts_with("help") || cmd.starts_with("/help") {
-                            println!("{}", help_parser::format_help_response(&response.body));
-                        } else {
-                            println!("{}", format_generic_response(&response.body));
-                        }
-                    }
-                    Err(e) => eprintln!("Error: {e}"),
-                }
+                run_command(&session, cmd, color, true);
             }
-            Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => {
-                break;
-            }
+            // Ctrl-C drops the line being typed, as in a shell.
+            Err(ReadlineError::Interrupted) => continue,
+            Err(ReadlineError::Eof) => break,
             Err(err) => {
-                println!("Error: {err:?}");
+                eprintln!("Error: {err}");
                 break;
             }
         }
     }
+    if let Some(path) = &history {
+        if let Err(e) = rl.save_history(path) {
+            eprintln!("Warning: could not save history to {}: {e}", path.display());
+        }
+    }
     Ok(())
+}
+
+fn main() -> Result<ExitCode> {
+    let cli = Cli::parse();
+    let password = match cli.password {
+        Some(pw) => pw,
+        None => prompt_password("Enter RCON password: ")?,
+    };
+    let color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+
+    let session = Rc::new(Session {
+        client: RefCell::new(rcon::Client::connect(&cli.address, &password)?),
+        lists: RefCell::new(HashMap::new()),
+    });
+
+    if !cli.command.is_empty() {
+        let ok = run_command(&session, &cli.command.join(" "), color, false);
+        return Ok(if ok {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        });
+    }
+    run_shell(session, color, cli.minecraft_version, cli.data_file)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_name_lists() {
+        assert_eq!(
+            parse_name_list("There are 2 of a max of 20 players online: GuyLewin, Steve"),
+            ["GuyLewin", "Steve"]
+        );
+        assert!(parse_name_list("There are 0 of a max of 20 players online: ").is_empty());
+        assert_eq!(
+            parse_name_list("There are 2 team(s): [red], [blue]"),
+            ["red", "blue"]
+        );
+        assert!(parse_name_list("There are no teams").is_empty());
+    }
 }
